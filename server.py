@@ -3,7 +3,6 @@ import requests
 import os
 import json
 from datetime import datetime, timedelta
-import time
 
 app = Flask(__name__)
 
@@ -18,10 +17,7 @@ WHATSAPP_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_
 MI_NUMERO_PERSONAL = "+5214962541655"  # NO incluyas "whatsapp:" aquí
 
 # Cache para evitar duplicados
-# Almacenará los ID de pedidos procesados (en memoria)
 PROCESSED_ORDERS = set()
-
-# Ruta para el archivo de caché persistente
 CACHE_FILE = "processed_orders.json"
 
 # Intentar cargar órdenes procesadas anteriormente
@@ -45,7 +41,6 @@ def webhook():
         return jsonify({"message": "Pedido ya procesado"}), 200
     
     # Verificar si el pedido es reciente (últimas 24 horas)
-    # Esto es útil para evitar procesar pedidos históricos
     created_at = data.get("created_at", "")
     if created_at:
         try:
@@ -64,7 +59,7 @@ def webhook():
     print("=== Shopify Webhook Data ===")
     print(data)
     
-    # Extraer datos relevantes para el mensaje
+    # Extraer datos básicos del cliente
     numero_orden = data.get("name", "Sin número")
     nombre_cliente = data.get("customer", {}).get("first_name", "Cliente")
     apellido_cliente = data.get("customer", {}).get("last_name", "")
@@ -90,9 +85,29 @@ def webhook():
         except:
             fecha_pedido = created_at
     
+    # Información del pago
+    moneda = data.get("currency", "MXN")
+    total_precio = data.get("total_price", "0.00")
+    
+    # Métodos de pago
+    payment_gateway_names = data.get("payment_gateway_names", [])
+    metodo_pago = "No especificado"
+    if payment_gateway_names:
+        metodo_pago = ", ".join(payment_gateway_names)
+    
+    # Estado financiero del pedido
+    estado_financiero = data.get("financial_status", "No disponible")
+    
     # Obtener productos
     line_items = data.get("line_items", [])
-    productos = ", ".join([item.get("title", "Sin título") for item in line_items])
+    productos_detalles = []
+    for item in line_items:
+        titulo = item.get("title", "Sin título")
+        cantidad = item.get("quantity", 1)
+        precio = item.get("price", "0.00")
+        productos_detalles.append(f"{titulo} (x{cantidad}) - ${precio} {moneda}")
+    
+    productos = "\n   • " + "\n   • ".join(productos_detalles) if productos_detalles else "No hay productos"
     
     # Crear el mensaje de notificación
     mensaje = (
@@ -101,7 +116,10 @@ def webhook():
         f"👤 Cliente: {nombre_cliente} {apellido_cliente}\n"
         f"📧 Correo: {correo}\n"
         f"📱 Teléfono: {telefono}\n"
-        f"🗓️ Fecha: {fecha_pedido}\n\n"
+        f"🗓️ Fecha: {fecha_pedido}\n"
+        f"💰 Total: ${total_precio} {moneda}\n"
+        f"💳 Método de pago: {metodo_pago}\n"
+        f"📊 Estado: {estado_financiero}\n\n"
         f"🛒 Productos: {productos}"
     )
     
