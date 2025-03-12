@@ -11,8 +11,9 @@ TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+141
 
 WHATSAPP_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
 
-# Tu número personal en formato E.164 (ej. +521XXXXXXXXXX para México)
-MI_NUMERO_PERSONAL = "+5214962541655"  # Ajusta este valor a tu número
+# Tu número personal en formato correcto para WhatsApp
+# IMPORTANTE: El formato debe ser exactamente "whatsapp:+521XXXXXXXXXX" (con el prefijo whatsapp:)
+MI_NUMERO_PERSONAL = "+5214962541655"  # NO incluyas "whatsapp:" aquí, se agrega abajo
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -38,10 +39,18 @@ def webhook():
         f"Productos: {productos}"
     )
     
-    # Enviar siempre a tu número personal
+    # Formatear correctamente el número de WhatsApp
+    # Asegurarnos que no haya espacios o caracteres extraños
+    numero = MI_NUMERO_PERSONAL.strip()
+    
+    # Asegurarnos que comience con +
+    if not numero.startswith('+'):
+        numero = '+' + numero
+    
+    # Enviar siempre a tu número personal, con formato correcto
     payload = {
-        "From": TWILIO_WHATSAPP_NUMBER,        # Por ejemplo, "whatsapp:+14155238886" (sandbox)
-        "To": f"whatsapp:{MI_NUMERO_PERSONAL}", # Tu WhatsApp personal
+        "From": TWILIO_WHATSAPP_NUMBER,   # Por ejemplo, "whatsapp:+14155238886" (sandbox)
+        "To": f"whatsapp:{numero}",       # Debe tener el prefijo "whatsapp:"
         "Body": mensaje
     }
     
