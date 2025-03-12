@@ -14,11 +14,13 @@ TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+141
 
 WHATSAPP_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
 
-# Lista de números a notificar (puedes agregar todos los que necesites)
+# Lista de números a notificar
+# IMPORTANTE: Cada número debe estar aprobado en el sandbox de Twilio
+# Para aprobar un número, este debe haber enviado el mensaje de verificación al 
+# número de sandbox de Twilio primero.
 NUMEROS_NOTIFICACION = [
     "+5214962541655",  # Tu número principal
-    "+5214961436947",  # Otro número (descomenta y añade los que necesites)
-    "+5214961015725",  # Otro número más
+    # Agrega más números aquí, todos deben estar verificados en Twilio
 ]
 
 # Cache para evitar duplicados
@@ -50,10 +52,25 @@ def enviar_whatsapp(numero, mensaje):
         "Body": mensaje
     }
     
-    response = requests.post(WHATSAPP_API_URL, data=payload, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
-    print(f"Twilio Response para {numero_formateado}:", response.status_code, response.text)
-    
-    return response.status_code == 201
+    try:
+        response = requests.post(WHATSAPP_API_URL, data=payload, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+        print(f"Twilio Response para {numero_formateado}:", response.status_code, response.text)
+        
+        # Imprimir más detalles para diagnóstico
+        if response.status_code != 201:
+            print(f"Error al enviar WhatsApp a {numero_formateado}. Detalles:")
+            print(f"Status: {response.status_code}")
+            print(f"Respuesta: {response.text}")
+            
+            # Verificar si es error de "número no verificado"
+            if "is not a verified" in response.text:
+                print(f"ADVERTENCIA: El número {numero_formateado} no está verificado en el sandbox de Twilio.")
+                print("El usuario debe enviar primero 'join [código]' al número del sandbox de Twilio.")
+        
+        return response.status_code == 201
+    except Exception as e:
+        print(f"Excepción al enviar WhatsApp a {numero_formateado}: {e}")
+        return False
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -150,13 +167,32 @@ def webhook():
         f"🛒 Productos: {productos}"
     )
     
-    # Enviar el mensaje a todos los números configurados
+    # Registrar a qué números se intentó enviar y el resultado
+    resultados = {}
     exito = False
+    
+    # Enviar mensajes a todos los números configurados
     for numero in NUMEROS_NOTIFICACION:
-        if enviar_whatsapp(numero, mensaje):
+        # Registrar intento
+        print(f"Intentando enviar a {numero}...")
+        
+        # Enviar mensaje
+        resultado = enviar_whatsapp(numero, mensaje)
+        resultados[numero] = resultado
+        
+        if resultado:
             exito = True
-            # Esperar un poco entre envíos para evitar límites de Twilio
-            time.sleep(1)
+            print(f"✓ Enviado correctamente a {numero}")
+        else:
+            print(f"✗ Falló el envío a {numero}")
+            
+        # Esperar entre envíos
+        time.sleep(1)
+    
+    # Registrar en logs todos los resultados
+    print("=== Resumen de envíos ===")
+    for numero, resultado in resultados.items():
+        print(f"Número: {numero} - {'Éxito' if resultado else 'Fallo'}")
     
     # Si al menos un mensaje fue enviado exitosamente, marcar el pedido como procesado
     if exito:
@@ -169,17 +205,45 @@ def webhook():
         except Exception as e:
             print(f"Error guardando caché: {e}")
         
-        return jsonify({"message": "Notificaciones enviadas"}), 200
+        return jsonify({
+            "message": "Notificaciones enviadas", 
+            "resultados": resultados
+        }), 200
     else:
-        return jsonify({"message": "Error al enviar notificaciones"}), 500
+        return jsonify({
+            "message": "Error al enviar notificaciones",
+            "resultados": resultados
+        }), 500
+
+@app.route("/test-numeros", methods=["GET"])
+def test_numeros():
+    """Endpoint para probar el envío a todos los números configurados"""
+    resultados = {}
+    mensaje_prueba = (
+        f"🧪 MENSAJE DE PRUEBA 🧪\n\n"
+        f"Este es un mensaje para verificar que las notificaciones "
+        f"de pedidos de Shopify están funcionando correctamente.\n\n"
+        f"Fecha y hora: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+    )
+    
+    for numero in NUMEROS_NOTIFICACION:
+        resultado = enviar_whatsapp(numero, mensaje_prueba)
+        resultados[numero] = resultado
+        time.sleep(1)
+    
+    return jsonify({
+        "message": "Prueba completada",
+        "resultados": resultados
+    })
 
 @app.route("/", methods=["GET"])
 def health_check():
-    """Endpoint de verificación de salud para comprobar que el servidor está en funcionamiento"""
+    """Endpoint de verificación de salud"""
     return jsonify({
         "status": "ok", 
         "message": "El servidor de notificaciones está funcionando correctamente",
-        "numeros_configurados": len(NUMEROS_NOTIFICACION)
+        "numeros_configurados": NUMEROS_NOTIFICACION,
+        "twilio_number": TWILIO_WHATSAPP_NUMBER
     })
 
 if __name__ == "__main__":
