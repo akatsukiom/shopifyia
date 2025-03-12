@@ -1,12 +1,15 @@
 from flask import Flask, request, jsonify
 import requests
+import os
 
 app = Flask(__name__)
 
-# Credenciales Twilio para enviar WhatsApp
-TWILIO_ACCOUNT_SID = "TU_SID"
-TWILIO_AUTH_TOKEN = "TU_TOKEN"
-TWILIO_WHATSAPP_NUMBER = "whatsapp:+14155238886"  # Número de Twilio
+# Obtener credenciales de Twilio desde variables de entorno (configuradas en Railway)
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "TU_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "TU_TOKEN")
+TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
+
+# URL para enviar mensajes mediante la API de Twilio
 WHATSAPP_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
 
 @app.route("/webhook", methods=["POST"])
@@ -16,15 +19,16 @@ def webhook():
     # Extraer información relevante del pedido
     nombre = data.get("customer", {}).get("first_name", "Cliente")
     telefono = data.get("customer", {}).get("phone", None)
-    productos = ", ".join([item["title"] for item in data.get("line_items", [])])
+    productos = ", ".join([item.get("title", "") for item in data.get("line_items", [])])
 
-    # Si no hay teléfono, evitar enviar el mensaje
+    # Validar que el teléfono exista
     if not telefono:
         return jsonify({"error": "No se encontró un número de teléfono"}), 400
 
-    mensaje = f"¡Hola {nombre}! Tu pedido ha sido confirmado y está en proceso. Productos: {productos}. Gracias por tu compra."
+    mensaje = (f"¡Hola {nombre}! Tu pedido ha sido confirmado y está en proceso. "
+               f"Productos: {productos}. Gracias por tu compra.")
 
-    # Enviar mensaje a WhatsApp mediante Twilio
+    # Enviar mensaje a WhatsApp mediante la API de Twilio
     payload = {
         "From": TWILIO_WHATSAPP_NUMBER,
         "To": f"whatsapp:{telefono}",
@@ -35,4 +39,6 @@ def webhook():
     return jsonify({"message": "Notificación enviada"}), response.status_code
 
 if __name__ == "__main__":
-    app.run(port=5000)
+    # Railway asigna el puerto en la variable de entorno PORT; si no, usa 5000 por defecto.
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
