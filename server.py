@@ -4,63 +4,54 @@ import os
 
 app = Flask(__name__)
 
-# Variables de entorno (ideal para Railway):
+# Variables de entorno (Railway):
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "TU_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "TU_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
 
 WHATSAPP_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
 
+# Tu número personal en formato E.164 (ej. +521XXXXXXXXXX para México)
+MI_NUMERO_PERSONAL = "+5214962541655"  # Ajusta este valor a tu número
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json  # Datos del pedido desde Shopify
+    data = request.json  # Recibe datos del pedido desde Shopify
     
-    # Imprimir JSON en logs (Railway) para diagnosticar
+    # Imprime el JSON para diagnosticar
     print("=== Shopify Webhook Data ===")
     print(data)
     
-    # 1. Extraer nombre
-    nombre = data.get("customer", {}).get("first_name", "Cliente")
-    
-    # 2. Buscar el teléfono en distintos campos
-    telefono = data.get("customer", {}).get("phone")
-    if not telefono:
-        telefono = data.get("billing_address", {}).get("phone")
-    if not telefono:
-        telefono = data.get("shipping_address", {}).get("phone")
-    
-    # 3. Validar que tengamos un teléfono
-    if not telefono:
-        return jsonify({"error": "No se encontró un número de teléfono"}), 400
-    
-    # 4. Ajustar formato para México (agregar '1' tras '+52' si no está)
-    if telefono.startswith("+52") and not telefono.startswith("+521"):
-        telefono = "+521" + telefono[3:]
-    
-    # 5. Obtener lista de productos
+    # Extraer datos relevantes para el mensaje
+    numero_orden = data.get("name", "Sin número")
+    nombre_cliente = data.get("customer", {}).get("first_name", "Cliente")
     line_items = data.get("line_items", [])
+    
+    # Construir una lista de productos
     productos = ", ".join([item.get("title", "Sin título") for item in line_items])
     
-    # 6. Crear el mensaje
+    # Crear el mensaje de notificación
     mensaje = (
-        f"¡Hola {nombre}! Tu pedido ha sido confirmado y está en proceso. "
-        f"Productos: {productos}. ¡Gracias por tu compra!"
+        f"¡Se ha pagado un nuevo pedido!\n"
+        f"Orden: {numero_orden}\n"
+        f"Cliente: {nombre_cliente}\n"
+        f"Productos: {productos}"
     )
     
-    # 7. Preparar payload para Twilio
+    # Enviar siempre a tu número personal
     payload = {
-        "From": TWILIO_WHATSAPP_NUMBER,     # Debe ser "whatsapp:+14155238886" si usas Sandbox
-        "To": f"whatsapp:{telefono}",
+        "From": TWILIO_WHATSAPP_NUMBER,        # Por ejemplo, "whatsapp:+14155238886" (sandbox)
+        "To": f"whatsapp:{MI_NUMERO_PERSONAL}", # Tu WhatsApp personal
         "Body": mensaje
     }
     
-    # 8. Enviar mensaje a Twilio
+    # Realizar la petición a Twilio
     response = requests.post(WHATSAPP_API_URL, data=payload, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
     
-    # 9. Imprimir respuesta de Twilio para ver errores (por ejemplo, 21910)
+    # Imprimir la respuesta de Twilio en logs (para ver si hay errores)
     print("Twilio Response:", response.status_code, response.text)
     
-    # 10. Devolver el status code de Twilio a Shopify
+    # Devolver el status code de Twilio a Shopify
     return jsonify({"message": "Notificación enviada"}), response.status_code
 
 if __name__ == "__main__":
