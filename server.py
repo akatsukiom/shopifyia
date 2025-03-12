@@ -1,7 +1,10 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 import requests
 import os
 import json
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import time
 
@@ -12,30 +15,42 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "TU_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "TU_TOKEN")
 TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
 
+# Variables para correo electrónico
+EMAIL_REMITENTE = os.environ.get("EMAIL_REMITENTE", "tu_correo@gmail.com")
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD", "tu_password_o_app_password")
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com") 
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+
+# Número de WhatsApp para que los clientes envíen su boucher
+NUMERO_BOUCHER = os.environ.get("NUMERO_BOUCHER", "4961260597")
+
 WHATSAPP_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
 
 # Lista de números a notificar
-# IMPORTANTE: Cada número debe estar aprobado en el sandbox de Twilio
-# Para aprobar un número, este debe haber enviado el mensaje de verificación al 
-# número de sandbox de Twilio primero.
 NUMEROS_NOTIFICACION = [
     "+5214962541655",
     "+5214961436947",
-    "+5214961015725",  # Tu número principal
+    "+5214961015725",
     # Agrega más números aquí, todos deben estar verificados en Twilio
 ]
 
 # Cache para evitar duplicados
 PROCESSED_ORDERS = set()
+PENDING_ORDERS = {}  # Almacena órdenes pendientes de confirmación
 CACHE_FILE = "processed_orders.json"
+PENDING_FILE = "pending_orders.json"
 
-# Intentar cargar órdenes procesadas anteriormente
+# Cargar órdenes procesadas y pendientes
 try:
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, 'r') as f:
             PROCESSED_ORDERS = set(json.load(f))
+    
+    if os.path.exists(PENDING_FILE):
+        with open(PENDING_FILE, 'r') as f:
+            PENDING_ORDERS = json.load(f)
 except Exception as e:
-    print(f"Error cargando el archivo de caché: {e}")
+    print(f"Error cargando archivos de caché: {e}")
 
 def formatear_numero(numero):
     """Formatea correctamente un número para WhatsApp"""
@@ -57,21 +72,43 @@ def enviar_whatsapp(numero, mensaje):
     try:
         response = requests.post(WHATSAPP_API_URL, data=payload, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
         print(f"Twilio Response para {numero_formateado}:", response.status_code, response.text)
-        
-        # Imprimir más detalles para diagnóstico
-        if response.status_code != 201:
-            print(f"Error al enviar WhatsApp a {numero_formateado}. Detalles:")
-            print(f"Status: {response.status_code}")
-            print(f"Respuesta: {response.text}")
-            
-            # Verificar si es error de "número no verificado"
-            if "is not a verified" in response.text:
-                print(f"ADVERTENCIA: El número {numero_formateado} no está verificado en el sandbox de Twilio.")
-                print("El usuario debe enviar primero 'join [código]' al número del sandbox de Twilio.")
-        
         return response.status_code == 201
     except Exception as e:
         print(f"Excepción al enviar WhatsApp a {numero_formateado}: {e}")
+        return False
+
+def enviar_correo(destinatario, asunto, mensaje_html):
+    """Envía un correo electrónico con formato HTML"""
+    # Si no hay configuración de correo, salir
+    if not EMAIL_REMITENTE or not EMAIL_PASSWORD:
+        print("Configuración de correo electrónico incompleta. No se enviará el correo.")
+        return False
+    
+    try:
+        # Crear mensaje
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = asunto
+        msg['From'] = EMAIL_REMITENTE
+        msg['To'] = destinatario
+        
+        # Agregar contenido HTML
+        mensaje_parte = MIMEText(mensaje_html, 'html')
+        msg.attach(mensaje_parte)
+        
+        # Conectar con el servidor SMTP
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()  # Iniciar conexión segura
+        server.login(EMAIL_REMITENTE, EMAIL_PASSWORD)
+        
+        # Enviar correo
+        server.sendmail(EMAIL_REMITENTE, destinatario, msg.as_string())
+        server.quit()
+        
+        print(f"Correo enviado exitosamente a {destinatario}")
+        return True
+        
+    except Exception as e:
+        print(f"Error al enviar correo: {e}")
         return False
 
 @app.route("/webhook", methods=["POST"])
@@ -155,7 +192,32 @@ def webhook():
     
     productos = "\n   • " + "\n   • ".join(productos_detalles) if productos_detalles else "No hay productos"
     
-    # Crear el mensaje de notificación
+    # Guardar en pendientes para futura confirmación
+    PENDING_ORDERS[order_id] = {
+        "order_id": order_id,
+        "numero_orden": numero_orden,
+        "nombre_cliente": f"{nombre_cliente} {apellido_cliente}",
+        "correo": correo,
+        "telefono": telefono,
+        "fecha_pedido": fecha_pedido,
+        "total_precio": total_precio,
+        "moneda": moneda,
+        "metodo_pago": metodo_pago,
+        "estado_financiero": estado_financiero,
+        "productos": productos_detalles,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    # Guardar pendientes en archivo
+    try:
+        with open(PENDING_FILE, 'w') as f:
+            json.dump(PENDING_ORDERS, f)
+    except Exception as e:
+        print(f"Error guardando pendientes: {e}")
+    
+    # Crear el mensaje de notificación con enlace a la página de confirmación
+    confirmation_url = f"{request.url_root}confirmar/{order_id}"
+    
     mensaje = (
         f"📦 ¡NUEVO PEDIDO!\n\n"
         f"🔢 Orden: {numero_orden}\n"
@@ -166,77 +228,317 @@ def webhook():
         f"💰 Total: ${total_precio} {moneda}\n"
         f"💳 Método de pago: {metodo_pago}\n"
         f"📊 Estado: {estado_financiero}\n\n"
-        f"🛒 Productos: {productos}"
+        f"🛒 Productos: {productos}\n\n"
+        f"🔄 Para CONFIRMAR este pedido y enviar un correo al cliente, accede a:\n"
+        f"{confirmation_url}"
     )
     
-    # Registrar a qué números se intentó enviar y el resultado
+    # Enviar el mensaje a todos los números configurados
     resultados = {}
     exito = False
     
-    # Enviar mensajes a todos los números configurados
     for numero in NUMEROS_NOTIFICACION:
-        # Registrar intento
-        print(f"Intentando enviar a {numero}...")
-        
-        # Enviar mensaje
         resultado = enviar_whatsapp(numero, mensaje)
         resultados[numero] = resultado
-        
         if resultado:
             exito = True
-            print(f"✓ Enviado correctamente a {numero}")
-        else:
-            print(f"✗ Falló el envío a {numero}")
-            
-        # Esperar entre envíos
         time.sleep(1)
     
-    # Registrar en logs todos los resultados
-    print("=== Resumen de envíos ===")
-    for numero, resultado in resultados.items():
-        print(f"Número: {numero} - {'Éxito' if resultado else 'Fallo'}")
+    return jsonify({"message": "Notificación enviada", "confirmacion_requerida": True}), 200
+
+@app.route("/confirmar/<order_id>", methods=["GET"])
+def pagina_confirmacion(order_id):
+    """Página web para confirmar un pedido"""
+    if order_id not in PENDING_ORDERS:
+        return "Pedido no encontrado o ya procesado", 404
     
-    # Si al menos un mensaje fue enviado exitosamente, marcar el pedido como procesado
-    if exito:
+    pedido = PENDING_ORDERS[order_id]
+    
+    # Plantilla HTML para la página de confirmación
+    template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Confirmar Pedido {{ pedido.numero_orden }}</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                line-height: 1.6;
+                margin: 0;
+                padding: 20px;
+                background-color: #f9f9f9;
+            }
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+                background: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            h1 {
+                color: #333;
+                text-align: center;
+            }
+            .order-details {
+                margin-bottom: 20px;
+                padding: 15px;
+                background-color: #f5f5f5;
+                border-radius: 5px;
+            }
+            .product-list {
+                list-style-type: none;
+                padding: 0;
+            }
+            .product-item {
+                padding: 8px 0;
+                border-bottom: 1px solid #eee;
+            }
+            .btn {
+                display: inline-block;
+                padding: 10px 20px;
+                background-color: #4CAF50;
+                color: white;
+                text-decoration: none;
+                border-radius: 4px;
+                font-weight: bold;
+                margin-right: 10px;
+                text-align: center;
+            }
+            .btn-confirm {
+                background-color: #4CAF50;
+            }
+            .buttons {
+                margin-top: 20px;
+                text-align: center;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Confirmar Pedido</h1>
+            
+            <div class="order-details">
+                <p><strong>Número de Orden:</strong> {{ pedido.numero_orden }}</p>
+                <p><strong>Cliente:</strong> {{ pedido.nombre_cliente }}</p>
+                <p><strong>Correo:</strong> {{ pedido.correo }}</p>
+                <p><strong>Teléfono:</strong> {{ pedido.telefono }}</p>
+                <p><strong>Fecha:</strong> {{ pedido.fecha_pedido }}</p>
+                <p><strong>Total:</strong> ${{ pedido.total_precio }} {{ pedido.moneda }}</p>
+                <p><strong>Método de Pago:</strong> {{ pedido.metodo_pago }}</p>
+                <p><strong>Estado:</strong> {{ pedido.estado_financiero }}</p>
+                
+                <h3>Productos:</h3>
+                <ul class="product-list">
+                    {% for producto in pedido.productos %}
+                    <li class="product-item">{{ producto }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            
+            <div class="buttons">
+                <a href="{{ url_root }}procesar-confirmacion/{{ order_id }}" class="btn btn-confirm">✅ Confirmar Pedido</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Renderizar la plantilla con los datos del pedido
+    return render_template_string(
+        template, 
+        pedido=pedido, 
+        order_id=order_id,
+        url_root=request.url_root
+    )
+
+@app.route("/procesar-confirmacion/<order_id>", methods=["GET"])
+def procesar_confirmacion(order_id):
+    """Procesa la confirmación y envía el correo al cliente"""
+    if order_id not in PENDING_ORDERS:
+        return "Pedido no encontrado o ya procesado", 404
+    
+    pedido = PENDING_ORDERS[order_id]
+    correo_cliente = pedido["correo"]
+    
+    if not correo_cliente or correo_cliente == "No disponible":
+        return "No se puede procesar: el cliente no tiene correo electrónico", 400
+    
+    # Crear el mensaje HTML para el correo
+    mensaje_html = f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background-color: #f8f9fa; padding: 20px; text-align: center; }}
+            .content {{ padding: 20px; }}
+            .footer {{ background-color: #f8f9fa; padding: 10px; text-align: center; font-size: 12px; }}
+            .important {{ font-weight: bold; color: #d9534f; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>¡Gracias por tu compra!</h1>
+            </div>
+            <div class="content">
+                <p>Hola <strong>{pedido['nombre_cliente']}</strong>,</p>
+                <p>Hemos recibido tu pedido <strong>{pedido['numero_orden']}</strong> con éxito.</p>
+                <p class="important">Para proceder con tu orden, necesitamos que nos envíes el comprobante de pago (boucher) vía WhatsApp al siguiente número:</p>
+                <p style="font-size: 24px; text-align: center; margin: 20px 0;"><strong>{NUMERO_BOUCHER}</strong></p>
+                <p>Por favor menciona tu número de orden <strong>{pedido['numero_orden']}</strong> al enviarnos el comprobante.</p>
+                <p>Resumen de tu pedido:</p>
+                <ul>
+                    <li>Fecha: {pedido['fecha_pedido']}</li>
+                    <li>Total: ${pedido['total_precio']} {pedido['moneda']}</li>
+                    <li>Método de pago: {pedido['metodo_pago']}</li>
+                </ul>
+                <p>Si tienes alguna pregunta, no dudes en contactarnos.</p>
+                <p>¡Gracias por tu preferencia!</p>
+            </div>
+            <div class="footer">
+                <p>Este es un correo automático, por favor no respondas a este mensaje.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Enviar el correo
+    exito_correo = enviar_correo(
+        correo_cliente, 
+        f"Confirmación de pedido {pedido['numero_orden']} - Envío de comprobante",
+        mensaje_html
+    )
+    
+    # Mover de pendientes a procesados
+    if exito_correo:
         PROCESSED_ORDERS.add(order_id)
-        
-        # Guardar en el archivo de caché
+        if order_id in PENDING_ORDERS:
+            del PENDING_ORDERS[order_id]
+            
+        # Guardar archivos actualizados
         try:
             with open(CACHE_FILE, 'w') as f:
                 json.dump(list(PROCESSED_ORDERS), f)
+            with open(PENDING_FILE, 'w') as f:
+                json.dump(PENDING_ORDERS, f)
         except Exception as e:
-            print(f"Error guardando caché: {e}")
+            print(f"Error guardando archivos: {e}")
         
-        return jsonify({
-            "message": "Notificaciones enviadas", 
-            "resultados": resultados
-        }), 200
+        # Notificar a los administradores
+        mensaje_confirmacion = (
+            f"✅ PEDIDO CONFIRMADO ✅\n\n"
+            f"Se ha enviado correo de confirmación al cliente para la orden {pedido['numero_orden']}.\n"
+            f"Cliente: {pedido['nombre_cliente']}\n"
+            f"Correo: {pedido['correo']}\n"
+            f"Total: ${pedido['total_precio']} {pedido['moneda']}"
+        )
+        
+        for numero in NUMEROS_NOTIFICACION:
+            enviar_whatsapp(numero, mensaje_confirmacion)
+            time.sleep(1)
+        
+        return """
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Pedido Confirmado</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    margin: 0;
+                    padding: 20px;
+                    background-color: #f8f9fa;
+                    text-align: center;
+                }
+                .container {
+                    max-width: 600px;
+                    margin: 0 auto;
+                    background: white;
+                    padding: 30px;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }
+                h1 {
+                    color: #4CAF50;
+                }
+                .icon {
+                    font-size: 72px;
+                    margin-bottom: 20px;
+                }
+                a {
+                    display: inline-block;
+                    margin-top: 20px;
+                    color: #007bff;
+                    text-decoration: none;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="icon">✅</div>
+                <h1>¡Pedido Confirmado!</h1>
+                <p>Se ha enviado un correo electrónico al cliente solicitando el comprobante de pago.</p>
+                <p>Los administradores han sido notificados.</p>
+                <a href="/">Volver al inicio</a>
+            </div>
+        </body>
+        </html>
+        """
     else:
-        return jsonify({
-            "message": "Error al enviar notificaciones",
-            "resultados": resultados
-        }), 500
-
-@app.route("/test-numeros", methods=["GET"])
-def test_numeros():
-    """Endpoint para probar el envío a todos los números configurados"""
-    resultados = {}
-    mensaje_prueba = (
-        f"🧪 MENSAJE DE PRUEBA 🧪\n\n"
-        f"Este es un mensaje para verificar que las notificaciones "
-        f"de pedidos de Shopify están funcionando correctamente.\n\n"
-        f"Fecha y hora: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
-    )
-    
-    for numero in NUMEROS_NOTIFICACION:
-        resultado = enviar_whatsapp(numero, mensaje_prueba)
-        resultados[numero] = resultado
-        time.sleep(1)
-    
-    return jsonify({
-        "message": "Prueba completada",
-        "resultados": resultados
-    })
+        return """
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Error al Confirmar</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    margin: 0;
+                    padding: 20px;
+                    background-color: #f8f9fa;
+                    text-align: center;
+                }
+                .container {
+                    max-width: 600px;
+                    margin: 0 auto;
+                    background: white;
+                    padding: 30px;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                }
+                h1 {
+                    color: #dc3545;
+                }
+                .icon {
+                    font-size: 72px;
+                    margin-bottom: 20px;
+                }
+                a {
+                    display: inline-block;
+                    margin-top: 20px;
+                    color: #007bff;
+                    text-decoration: none;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="icon">❌</div>
+                <h1>Error al Confirmar</h1>
+                <p>Hubo un problema al enviar el correo electrónico al cliente.</p>
+                <p>Verifica la configuración de correo electrónico e intenta nuevamente.</p>
+                <a href="/confirmar/{order_id}">Volver a intentar</a>
+            </div>
+        </body>
+        </html>
+        """
 
 @app.route("/", methods=["GET"])
 def health_check():
@@ -245,7 +547,8 @@ def health_check():
         "status": "ok", 
         "message": "El servidor de notificaciones está funcionando correctamente",
         "numeros_configurados": NUMEROS_NOTIFICACION,
-        "twilio_number": TWILIO_WHATSAPP_NUMBER
+        "pendientes": len(PENDING_ORDERS),
+        "procesados": len(PROCESSED_ORDERS)
     })
 
 if __name__ == "__main__":
