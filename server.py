@@ -20,7 +20,8 @@ WHATSAPP_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_
 # número de sandbox de Twilio primero.
 NUMEROS_NOTIFICACION = [
     "+5214962541655",
-    "+5214961436947",  # Tu número principal
+    "+5214961436947",
+    "+5214961015725",  # Tu número principal
     # Agrega más números aquí, todos deben estar verificados en Twilio
 ]
 
