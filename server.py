@@ -3,6 +3,7 @@ import requests
 import os
 import json
 from datetime import datetime, timedelta
+import time
 
 app = Flask(__name__)
 
@@ -13,8 +14,12 @@ TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+141
 
 WHATSAPP_API_URL = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
 
-# Tu número personal en formato correcto para WhatsApp
-MI_NUMERO_PERSONAL = "+5214962541655"  # NO incluyas "whatsapp:" aquí
+# Lista de números a notificar (puedes agregar todos los que necesites)
+NUMEROS_NOTIFICACION = [
+    "+5214962541655",  # Tu número principal
+    "+5214961436947",  # Otro número (descomenta y añade los que necesites)
+    "+5214961015725",  # Otro número más
+]
 
 # Cache para evitar duplicados
 PROCESSED_ORDERS = set()
@@ -27,6 +32,28 @@ try:
             PROCESSED_ORDERS = set(json.load(f))
 except Exception as e:
     print(f"Error cargando el archivo de caché: {e}")
+
+def formatear_numero(numero):
+    """Formatea correctamente un número para WhatsApp"""
+    numero = numero.strip()
+    if not numero.startswith('+'):
+        numero = '+' + numero
+    return numero
+
+def enviar_whatsapp(numero, mensaje):
+    """Envía un mensaje de WhatsApp a un número específico"""
+    numero_formateado = formatear_numero(numero)
+    
+    payload = {
+        "From": TWILIO_WHATSAPP_NUMBER,
+        "To": f"whatsapp:{numero_formateado}",
+        "Body": mensaje
+    }
+    
+    response = requests.post(WHATSAPP_API_URL, data=payload, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+    print(f"Twilio Response para {numero_formateado}:", response.status_code, response.text)
+    
+    return response.status_code == 201
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -123,26 +150,16 @@ def webhook():
         f"🛒 Productos: {productos}"
     )
     
-    # Formatear correctamente el número de WhatsApp
-    numero = MI_NUMERO_PERSONAL.strip()
-    if not numero.startswith('+'):
-        numero = '+' + numero
+    # Enviar el mensaje a todos los números configurados
+    exito = False
+    for numero in NUMEROS_NOTIFICACION:
+        if enviar_whatsapp(numero, mensaje):
+            exito = True
+            # Esperar un poco entre envíos para evitar límites de Twilio
+            time.sleep(1)
     
-    # Enviar siempre a tu número personal, con formato correcto
-    payload = {
-        "From": TWILIO_WHATSAPP_NUMBER,
-        "To": f"whatsapp:{numero}",
-        "Body": mensaje
-    }
-    
-    # Realizar la petición a Twilio
-    response = requests.post(WHATSAPP_API_URL, data=payload, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
-    
-    # Imprimir la respuesta de Twilio en logs
-    print("Twilio Response:", response.status_code, response.text)
-    
-    # Si el mensaje fue enviado exitosamente, agregar el ID a la lista de procesados
-    if response.status_code == 201:
+    # Si al menos un mensaje fue enviado exitosamente, marcar el pedido como procesado
+    if exito:
         PROCESSED_ORDERS.add(order_id)
         
         # Guardar en el archivo de caché
@@ -151,9 +168,19 @@ def webhook():
                 json.dump(list(PROCESSED_ORDERS), f)
         except Exception as e:
             print(f"Error guardando caché: {e}")
-    
-    # Devolver el status code de Twilio a Shopify
-    return jsonify({"message": "Notificación enviada"}), response.status_code
+        
+        return jsonify({"message": "Notificaciones enviadas"}), 200
+    else:
+        return jsonify({"message": "Error al enviar notificaciones"}), 500
+
+@app.route("/", methods=["GET"])
+def health_check():
+    """Endpoint de verificación de salud para comprobar que el servidor está en funcionamiento"""
+    return jsonify({
+        "status": "ok", 
+        "message": "El servidor de notificaciones está funcionando correctamente",
+        "numeros_configurados": len(NUMEROS_NOTIFICACION)
+    })
 
 if __name__ == "__main__":
     # Usa el puerto asignado por Railway o 5000 por defecto
